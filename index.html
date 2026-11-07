@@ -76,6 +76,21 @@
   .pill.out{ background:#f2f4f7; color:#475467; }
   .actions{ display:flex; gap:8px; flex-wrap:wrap; }
   footer.site{ background:var(--navy); color:#8b96ab; text-align:center; padding:22px 16px; font-size:13px; }
+  .timeline{ list-style:none; margin:0 0 20px; padding:0; }
+  .timeline li{ position:relative; padding:0 0 20px 34px; }
+  .timeline li:last-child{ padding-bottom:0; }
+  .timeline li::before{ content:''; position:absolute; left:9px; top:22px; bottom:0; width:2px; background:var(--line); }
+  .timeline li:last-child::before{ display:none; }
+  .timeline .dot{ position:absolute; left:0; top:2px; width:20px; height:20px; border-radius:50%; border:2px solid #d0d5dd; background:#fff; box-sizing:border-box; }
+  .timeline li.done .dot{ background:var(--gold); border-color:var(--gold); }
+  .timeline li.current .dot{ border-color:var(--gold); background:#fff; animation:tlpulse 2s infinite; }
+  .timeline li.attention .dot{ background:var(--red); border-color:var(--red); }
+  @keyframes tlpulse{ 0%{ box-shadow:0 0 0 3px rgba(242,212,157,.45); } 50%{ box-shadow:0 0 0 7px rgba(242,212,157,.15); } 100%{ box-shadow:0 0 0 3px rgba(242,212,157,.45); } }
+  .timeline li.upcoming{ color:var(--muted); }
+  .timeline h4{ margin:0 0 2px; font-size:15.5px; }
+  .timeline p{ margin:0; font-size:13.5px; line-height:1.5; color:#475467; }
+  .timeline li.upcoming p{ color:var(--muted); }
+  .timeline .tldate{ font-size:12.5px; color:var(--muted); margin-top:2px; }
   @media (max-width:600px){ .hero h1{ font-size:32px; } }
 </style>
 </head>
@@ -271,6 +286,140 @@ function statusPill(status) {
   return /*#__PURE__*/React.createElement("span", {
     className: "pill out"
   }, "Not in your package");
+}
+
+/* ---------- Verification timeline ----------
+   Derived only from the member's own application row (and their receipts
+   rows for the Active step). The Applied step uses created_at; later steps
+   use updated_at labelled "Updated <date>" — never an exact event time. */
+function VerificationTimeline({
+  application,
+  receipts
+}) {
+  const a = application;
+  const paid = (receipts && receipts.length > 0) || !!a.stripe_subscription_id;
+  const checkSkipped = a.tier === 'sale' || a.check_status === 'not_required';
+  const checkPassed = a.check_status === 'passed';
+  const checkAttention = a.check_status === 'failed' || a.check_status === 'flagged';
+  const checkDone = checkSkipped || checkPassed;
+  const approved = a.approval_status === 'approved';
+  const rejected = a.approval_status === 'rejected';
+  const updated = a.updated_at ? 'Updated ' + fmtDate(a.updated_at) : '';
+  const steps = [];
+
+  // 1. Application received — done as soon as the application exists.
+  steps.push({
+    title: 'Application received',
+    sub: 'Your application was received.',
+    state: 'done',
+    date: a.created_at ? 'Applied ' + fmtDate(a.created_at) : ''
+  });
+
+  // 2. Background check.
+  if (checkSkipped) {
+    steps.push({
+      title: 'Background check',
+      sub: 'No background check needed for this package — unless Stripe’s fraud system flags it.',
+      state: 'done',
+      date: updated
+    });
+  } else if (checkPassed) {
+    steps.push({
+      title: 'Background check',
+      sub: 'Background check via Checkr — passed.',
+      state: 'done',
+      date: updated
+    });
+  } else if (a.check_status === 'failed') {
+    steps.push({
+      title: 'Background check',
+      sub: 'Background check via Checkr — did not pass. Kiki will be in touch.',
+      state: 'attention',
+      date: ''
+    });
+  } else if (a.check_status === 'flagged') {
+    steps.push({
+      title: 'Background check',
+      sub: 'Background check via Checkr — flagged for review. Kiki will be in touch.',
+      state: 'attention',
+      date: ''
+    });
+  } else {
+    steps.push({
+      title: 'Background check',
+      sub: 'Background check via Checkr — in progress.',
+      state: 'current',
+      date: ''
+    });
+  }
+
+  // 3. Approval.
+  if (approved) {
+    steps.push({
+      title: 'Approval',
+      sub: 'Approved by Kiki.',
+      state: 'done',
+      date: updated
+    });
+  } else if (rejected) {
+    steps.push({
+      title: 'Approval',
+      sub: 'Not approved — please wait to hear from Kiki.',
+      state: 'attention',
+      date: ''
+    });
+  } else if (checkDone) {
+    steps.push({
+      title: 'Approval',
+      sub: 'Waiting for Kiki’s approval.',
+      state: 'current',
+      date: ''
+    });
+  } else {
+    steps.push({
+      title: 'Approval',
+      sub: 'Waiting for Kiki’s approval.',
+      state: 'upcoming',
+      date: ''
+    });
+  }
+
+  // 4. Verified.
+  if (approved && paid) {
+    steps.push({
+      title: 'Verified',
+      sub: 'Active member.',
+      state: 'done',
+      date: updated
+    });
+  } else if (approved) {
+    steps.push({
+      title: 'Verified — welcome to Kikibots Private',
+      sub: 'Complete your payment to activate.',
+      state: 'current',
+      date: ''
+    });
+  } else {
+    steps.push({
+      title: 'Verified',
+      sub: 'Once your account is approved, you will be verified here.',
+      state: 'upcoming',
+      date: ''
+    });
+  }
+
+  return /*#__PURE__*/React.createElement("ol", {
+    className: "timeline"
+  }, steps.map(function (s, i) {
+    return /*#__PURE__*/React.createElement("li", {
+      key: i,
+      className: s.state
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "dot"
+    }), /*#__PURE__*/React.createElement("h4", null, s.title), /*#__PURE__*/React.createElement("p", null, s.sub), s.date ? /*#__PURE__*/React.createElement("div", {
+      className: "tldate"
+    }, s.date) : null);
+  }));
 }
 
 /* ---------- Landing ---------- */
@@ -560,7 +709,8 @@ function CheckoutButton({
 
 /* ---------- Member status (before approval) ---------- */
 function StatusView({
-  application
+  application,
+  receipts
 }) {
   const a = application;
   let next = '';
@@ -585,7 +735,10 @@ function StatusView({
       marginTop: 28,
       maxWidth: 640
     }
-  }, /*#__PURE__*/React.createElement("h2", null, "Your application"), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("h2", null, "Your application"), /*#__PURE__*/React.createElement(VerificationTimeline, {
+    application: a,
+    receipts: receipts
+  }), /*#__PURE__*/React.createElement("div", {
     className: "rowline"
   }, /*#__PURE__*/React.createElement("span", {
     className: "muted"
@@ -679,7 +832,10 @@ function MemberArea({
     }, t.label);
   })), tab === 'overview' && /*#__PURE__*/React.createElement("div", {
     className: "card"
-  }, /*#__PURE__*/React.createElement("h3", null, "Overview"), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("h3", null, "Overview"), /*#__PURE__*/React.createElement(VerificationTimeline, {
+    application: a,
+    receipts: receipts
+  }), /*#__PURE__*/React.createElement("div", {
     className: "rowline"
   }, /*#__PURE__*/React.createElement("span", {
     className: "muted"
@@ -1072,7 +1228,8 @@ function App() {
       setApplication(row);
     }
   }), user && appLoaded && application && application.approval_status !== 'approved' && /*#__PURE__*/React.createElement(StatusView, {
-    application: application
+    application: application,
+    receipts: receipts
   }), user && appLoaded && application && application.approval_status === 'approved' && /*#__PURE__*/React.createElement(MemberArea, {
     user: user,
     application: application,
