@@ -1,3 +1,3 @@
 User-agent: *
 Allow: /
-Sitemap: https://kikibots-live.vercel.app/sitemap.xml
+Sitemap: https://kikibots.executives.org.uk/sitemap.xml
