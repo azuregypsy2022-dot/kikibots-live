@@ -116,6 +116,28 @@
   .timeline li.upcoming p{ color:var(--muted); }
   .timeline .tldate{ font-size:12.5px; color:var(--muted); margin-top:2px; }
   @media (max-width:600px){ .hero h1{ font-size:32px; } }
+  /* Kikibot chat (Phase 3) */
+  .kb-head{ display:flex; align-items:center; gap:14px; margin-bottom:6px; }
+  .kb-avatar{ width:52px; height:52px; border-radius:50%; background:var(--gold); color:var(--navy); display:flex; align-items:center; justify-content:center; font-family:Georgia,"Times New Roman",serif; font-size:24px; font-weight:700; flex:0 0 auto; overflow:hidden; }
+  .kb-avatar img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .kb-avatar.small{ width:30px; height:30px; font-size:15px; }
+  .kb-msgs{ max-height:380px; overflow-y:auto; margin:18px 0 12px; padding-right:4px; display:flex; flex-direction:column; gap:10px; }
+  .kb-msg{ display:flex; gap:8px; align-items:flex-start; }
+  .kb-msg.member{ justify-content:flex-end; }
+  .kb-bubble{ max-width:78%; padding:10px 14px; border-radius:14px; font-size:14.5px; line-height:1.55; }
+  .kb-msg.member .kb-bubble{ background:var(--gold); color:var(--navy); border-bottom-right-radius:4px; }
+  .kb-msg.kikibot .kb-bubble{ background:rgba(255,255,255,.1); color:#fff; border-bottom-left-radius:4px; }
+  .kb-bubble .kb-who{ display:block; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--gold); margin-bottom:2px; }
+  .kb-action{ margin-top:8px; }
+  .kb-action button{ background:transparent; color:var(--gold); border:1px solid var(--gold); border-radius:999px; padding:6px 12px; font-size:13px; font-weight:700; cursor:pointer; }
+  .kb-inputrow{ display:flex; gap:8px; }
+  .kb-inputrow input{ flex:1; padding:11px 12px; border:1px solid #d0d5dd; border-radius:10px; font-size:15px; font-family:inherit; background:#fff; color:var(--ink); }
+  .kb-settings{ background:rgba(255,255,255,.06); border:1px solid rgba(242,212,157,.35); border-radius:12px; padding:14px 16px; margin:14px 0; }
+  .kb-settings h4{ margin:0 0 4px; color:var(--gold); font-size:15px; }
+  .kb-settings p{ margin:0 0 10px; font-size:13.5px; }
+  .kb-settings .field label{ color:#d5dbe8; }
+  .kb-settings .field input{ background:#fff; }
+  .kb-lock{ background:rgba(255,255,255,.06); border:1px solid rgba(242,212,157,.35); border-radius:12px; padding:12px 16px; margin:14px 0; font-size:14px; color:#d5dbe8; line-height:1.6; }
 </style>
 </head>
 <body>
@@ -126,7 +148,8 @@
 <script>
 const {
   useState,
-  useEffect
+  useEffect,
+  useRef
 } = React;
 
 /* ---------- Configuration ---------- */
@@ -796,6 +819,565 @@ function StatusView({
   }))));
 }
 
+/* ---------- Kikibot assistant (Phase 3) ----------
+   Rule-based only — no AI API is called and no key is used.
+   Answers come from the tier rules in PACKAGES and SERVICES.
+   When a question matches a dashboard section, the reply carries a
+   button that opens that tab. Scheduling requests (Full members only)
+   and questions Kikibot cannot answer are saved as kikibot_requests
+   rows for Kiki; unanswered questions get the exact reply
+   “We will get back to you”. */
+const KIKIBOT_DEFAULT_NAME = 'Kikibot';
+
+function kikibotName(settings) {
+  if (settings && settings.kikibot_name && settings.kikibot_name.trim()) return settings.kikibot_name.trim();
+  return KIKIBOT_DEFAULT_NAME;
+}
+
+/* Resize a member photo client-side to a small JPEG data URL (max
+   256px on the long edge). The original full-size photo is never
+   stored or uploaded. */
+function resizeAvatar(file) {
+  return new Promise(function (resolve, reject) {
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function () {
+      var max = 256;
+      var scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      var w = Math.max(1, Math.round(img.naturalWidth * scale));
+      var h = Math.max(1, Math.round(img.naturalHeight * scale));
+      var canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = function () {
+      URL.revokeObjectURL(url);
+      reject(new Error('Could not read that photo.'));
+    };
+    img.src = url;
+  });
+}
+
+/* Rule-based replies. Returns { text, tab, tabLabel, schedule, escalate }.
+   tab/tabLabel open a dashboard tab from the reply. schedule means the
+   member wants to schedule something (Full only). escalate means the
+   question is saved for Kiki. */
+function kbReply(text, tier, name) {
+  var t = (text || '').toLowerCase();
+  function has() {
+    for (var i = 0; i < arguments.length; i++) {
+      if (t.indexOf(arguments[i]) !== -1) return true;
+    }
+    return false;
+  }
+  function ans(txt, tab, tabLabel) {
+    return { text: txt, tab: tab || null, tabLabel: tabLabel || null, schedule: false, escalate: false };
+  }
+  // Scheduling — Full members only.
+  if (has('schedul', 'appointment', 'meeting', 'book a call', 'arrange a time', 'set a time')) {
+    if (tier !== 'full') {
+      return ans('Scheduling requests unlock with a full membership. Your ' + TIER_LABEL[tier] + ' package includes Kikibot assistance and questions here — and Kiki will get back to you in her own time.');
+    }
+    return { text: '', tab: null, tabLabel: null, schedule: true, escalate: false };
+  }
+  // Receipts.
+  if (has('receipt')) {
+    return ans('Your receipts are under the Receipts tab — one appears after each confirmed payment, with the amount and reference.', 'receipts', 'Open Receipts');
+  }
+  // Ledger / balance.
+  if (has('ledger', 'balance')) {
+    return ans('Your ledger is under the Ledger tab — payments in, services used, and your running balance.', 'ledger', 'Open Ledger');
+  }
+  // Payment.
+  if (has('payment', 'pay', 'checkout', 'stripe')) {
+    return ans('Once your account is approved, your payment link is on the Overview tab. After your first confirmed payment, your receipt appears under Receipts.', 'overview', 'Open Overview');
+  }
+  // Antique auctions and Flight.
+  if (has('antique', 'auction', 'flight')) {
+    if (tier === 'full') {
+      return ans('Antique auctions and Flight are both included in your Full package. You can see everything your package includes under Services.', 'services', 'See your services');
+    }
+    return ans('Antique auctions and Flight are not in your ' + TIER_LABEL[tier] + ' package — they are part of the Full package. You can see everything your package does include under Services.', 'services', 'See your services');
+  }
+  // Founder / Kiki.
+  if (has('founder', 'speak to kiki', 'talk to kiki', 'meet kiki', 'kiki herself')) {
+    if (tier === 'full') {
+      return ans('As a Full member you have access to the founder (Kiki). If you would like time with Kiki, just ask me to schedule it.');
+    }
+    return ans('Access to the founder (Kiki) is not included in your ' + TIER_LABEL[tier] + ' package — Kikibot assists you here, and Kiki will get back to you in her own time. You can also write to support@executives.org.uk.');
+  }
+  // Counterclaims and affidavits.
+  if (has('counterclaim', 'affidavit')) {
+    if (tier === 'full') {
+      return ans('Private counterclaims are included in your Full package. You can see everything your package includes under Services.', 'services', 'See your services');
+    }
+    if (tier === 'partial') {
+      return ans('Your Partial package includes affidavit submissions plus 15 hours of counterclaims. Private counterclaims are not included. You can see everything your package includes under Services.', 'services', 'See your services');
+    }
+    return ans('Your Sale package includes free affidavit submissions. Private counterclaims are not included. You can see everything your package includes under Services.', 'services', 'See your services');
+  }
+  // Trial (Sale).
+  if (has('trial', '3-day', '3 day')) {
+    return ans('Your Sale package starts with a 3-day trial of everything, then continues with designer access, drivers, and Kikibot assistance.', 'services', 'See your services');
+  }
+  // Application status / verification.
+  if (has('status', 'approv', 'verif', 'background check', 'checkr')) {
+    return ans('Your application status and verification timeline are on the Overview tab.', 'overview', 'Open Overview');
+  }
+  // Services / package contents.
+  if (has('service', 'package', 'includ', 'wardrobe', 'chef', 'butler', 'grocery', 'driver', 'benefit', 'group')) {
+    if (tier === 'full') {
+      return ans('Your Full package includes everything — all services, access to the founder (Kiki), private counterclaims, antique auctions, and Flight.', 'services', 'See your services');
+    }
+    if (tier === 'partial') {
+      return ans('Your Partial package includes everything except antique auctions and Flight — including accounting, the ledger, affidavit submissions, and 15 hours of counterclaims. Kikibot assists you; access to the founder (Kiki) is not included.', 'services', 'See your services');
+    }
+    return ans('Your Sale package starts with a 3-day trial of everything, then continues with designer access, drivers, and Kikibot assistance. It also includes free affidavit submissions and your ledger.', 'services', 'See your services');
+  }
+  // Greeting.
+  if (has('hello', 'good morning', 'good afternoon') || t === 'hi' || t.indexOf('hi ') === 0 || t.indexOf(' hi ') !== -1 || t === 'hey' || t.indexOf('hey ') === 0 || t.indexOf(' hey ') !== -1) {
+    return ans('Hello — I am ' + name + ', your butler and assistant. Ask me about your package, your receipts or ledger, or what I can do for you.');
+  }
+  // Who is Kikibot / name.
+  if (has('who are you', 'your name', 'what is your name', 'what are you')) {
+    return ans('I am ' + name + ', your butler and assistant here at Kikibots Private.');
+  }
+  // Thanks.
+  if (has('thank')) {
+    return ans('You are welcome. Anything else I can help with?');
+  }
+  // What can Kikibot do.
+  if (has('what can you', 'help me', 'help')) {
+    return ans('I can answer questions about your package, show you your receipts, ledger and services, take scheduling requests (Full members), and save questions for Kiki when I cannot answer them.');
+  }
+  // Nothing matched — save the question for Kiki.
+  return { text: '', tab: null, tabLabel: null, schedule: false, escalate: true };
+}
+
+function kbAvatar(settings, small) {
+  var n = kikibotName(settings);
+  if (settings && settings.avatar_data_url) {
+    return /*#__PURE__*/React.createElement("span", {
+      className: "kb-avatar" + (small ? " small" : "")
+    }, /*#__PURE__*/React.createElement("img", {
+      src: settings.avatar_data_url,
+      alt: n
+    }));
+  }
+  return /*#__PURE__*/React.createElement("span", {
+    className: "kb-avatar" + (small ? " small" : "")
+  }, n.charAt(0).toUpperCase());
+}
+
+function KikibotTab({
+  user,
+  application,
+  onNavigate
+}) {
+  const [messages, setMessages] = useState([]);
+  const [settings, setSettings] = useState(null);
+  const [input, setInput] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [savingName, setSavingName] = useState(false);
+  const [nameInput, setNameInput] = useState(KIKIBOT_DEFAULT_NAME);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [settingsErr, setSettingsErr] = useState('');
+  const [collectingSchedule, setCollectingSchedule] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const listRef = useRef(null);
+  const seededRef = useRef(false);
+  const tier = application.tier;
+  const isFull = tier === 'full';
+  const name = kikibotName(settings);
+
+  useEffect(function () {
+    var cancelled = false;
+    sb.from('kikibot_settings').select('*').eq('user_id', user.id).maybeSingle().then(function (sres) {
+      if (cancelled) return;
+      var st = !sres.error && sres.data ? sres.data : null;
+      setSettings(st);
+      setNameInput(kikibotName(st));
+      return sb.from('kikibot_messages').select('*').eq('user_id', user.id).order('created_at', {
+        ascending: true
+      }).then(function (mres) {
+        if (cancelled) return;
+        var rows = mres.data || [];
+        setMessages(rows);
+        setLoaded(true);
+        if (rows.length === 0 && !seededRef.current) {
+          seededRef.current = true;
+          var greet = 'Hello — I am ' + kikibotName(st) + ', your butler and assistant. Ask me about your package, your receipts or ledger, or what I can do for you.';
+          sb.from('kikibot_messages').insert({
+            user_id: user.id,
+            application_id: application.id,
+            role: 'kikibot',
+            body: greet
+          }).select().single().then(function (gres) {
+            if (!gres.error && gres.data) setMessages([gres.data]);
+          });
+        }
+      });
+    });
+    return function () {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(function () {
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [messages]);
+
+  async function saveReply(body, tab, tabLabel) {
+    var ins = await sb.from('kikibot_messages').insert({
+      user_id: user.id,
+      application_id: application.id,
+      role: 'kikibot',
+      body: body,
+      action_tab: tab || null,
+      action_label: tabLabel || null
+    }).select().single();
+    if (ins.error) throw ins.error;
+    return ins.data;
+  }
+
+  async function send(e) {
+    if (e) e.preventDefault();
+    var text = input.trim();
+    if (!text || busy) return;
+    setInput('');
+    setBusy(true);
+    var shown = messages;
+    try {
+      var ins = await sb.from('kikibot_messages').insert({
+        user_id: user.id,
+        application_id: application.id,
+        role: 'member',
+        body: text
+      }).select().single();
+      if (ins.error) throw ins.error;
+      shown = shown.concat([ins.data]);
+      setMessages(shown);
+      var reply;
+      if (collectingSchedule) {
+        if (text.toLowerCase() === 'cancel') {
+          setCollectingSchedule(false);
+          reply = {
+            text: 'No problem — nothing was saved. How else can I help?',
+            tab: null,
+            tabLabel: null
+          };
+        } else {
+          var req = await sb.from('kikibot_requests').insert({
+            user_id: user.id,
+            application_id: application.id,
+            kind: 'schedule',
+            title: text.slice(0, 80),
+            details: text
+          }).select().single();
+          if (req.error) throw req.error;
+          setCollectingSchedule(false);
+          reply = {
+            text: 'Your scheduling request is saved — Kiki will confirm the time.',
+            tab: null,
+            tabLabel: null
+          };
+        }
+      } else {
+        var r = kbReply(text, tier, name);
+        if (r.schedule) {
+          setCollectingSchedule(true);
+          reply = {
+            text: 'Of course. What would you like to schedule, and what day and time suit you? Reply “cancel” if you change your mind.',
+            tab: null,
+            tabLabel: null
+          };
+        } else if (r.escalate) {
+          var q = await sb.from('kikibot_requests').insert({
+            user_id: user.id,
+            application_id: application.id,
+            kind: 'question',
+            title: text.slice(0, 80),
+            details: text
+          }).select().single();
+          if (q.error) throw q.error;
+          reply = {
+            text: 'We will get back to you. Your question has been saved for Kiki.',
+            tab: null,
+            tabLabel: null
+          };
+        } else {
+          reply = r;
+        }
+      }
+      var saved = await saveReply(reply.text, reply.tab, reply.tabLabel);
+      setMessages(shown.concat([saved]));
+    } catch (ex) {
+      setMessages(shown.concat([{
+        id: 'err-' + Date.now(),
+        role: 'kikibot',
+        body: 'Sorry — that did not save. Please try again.',
+        created_at: new Date().toISOString()
+      }]));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveName(e) {
+    if (e) e.preventDefault();
+    var n = nameInput.trim() || KIKIBOT_DEFAULT_NAME;
+    setSettingsErr('');
+    setSavingName(true);
+    var res = await sb.from('kikibot_settings').upsert({
+      user_id: user.id,
+      kikibot_name: n
+    }, {
+      onConflict: 'user_id'
+    }).select().single();
+    setSavingName(false);
+    if (res.error) {
+      setSettingsErr('Could not save the name: ' + res.error.message);
+      return;
+    }
+    setSettings(res.data);
+  }
+
+  async function onPhoto(e) {
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setSettingsErr('');
+    setPhotoBusy(true);
+    try {
+      var dataUrl = await resizeAvatar(file);
+      var res = await sb.from('kikibot_settings').upsert({
+        user_id: user.id,
+        kikibot_name: name,
+        avatar_data_url: dataUrl
+      }, {
+        onConflict: 'user_id'
+      }).select().single();
+      if (res.error) throw res.error;
+      setSettings(res.data);
+    } catch (ex) {
+      setSettingsErr('Could not save that photo: ' + (ex.message || 'please try a JPG or PNG image.'));
+    } finally {
+      setPhotoBusy(false);
+      e.target.value = '';
+    }
+  }
+
+  return /*#__PURE__*/React.createElement("div", {
+    className: "kikibot"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "kb-head"
+  }, kbAvatar(settings, false), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h3", {
+    style: {
+      margin: 0
+    }
+  }, name), /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: '2px 0 0',
+      fontSize: 13
+    }
+  }, "Your butler and assistant · ", TIER_LABEL[tier], " member"))), isFull ? /*#__PURE__*/React.createElement("div", {
+    className: "kb-settings"
+  }, /*#__PURE__*/React.createElement("h4", null, "Your Kikibot"), /*#__PURE__*/React.createElement("p", null, "Give your Kikibot a name and a photo — it is yours, and it will answer to that name here."), /*#__PURE__*/React.createElement("form", {
+    onSubmit: saveName
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "field",
+    style: {
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("label", null, "Kikibot name"), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    value: nameInput,
+    maxLength: 40,
+    onChange: function (e) {
+      setNameInput(e.target.value);
+    },
+    placeholder: "Kikibot"
+  })), /*#__PURE__*/React.createElement("button", {
+    className: "btn small",
+    type: "submit",
+    disabled: savingName
+  }, savingName ? 'Saving…' : 'Save name')), /*#__PURE__*/React.createElement("div", {
+    className: "field",
+    style: {
+      marginTop: 12,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("label", null, "Kikibot photo"), /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: "image/*",
+    disabled: photoBusy,
+    onChange: onPhoto
+  })), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 12.5,
+      color: '#c8d0e0',
+      margin: '0 0 4px'
+    }
+  }, "Your photo is resized to a small square before it is saved — the original is never stored."), photoBusy ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13
+    }
+  }, "Saving your photo…") : null, settingsErr ? /*#__PURE__*/React.createElement("div", {
+    className: "error",
+    style: {
+      margin: '8px 0 0'
+    }
+  }, settingsErr) : null) : /*#__PURE__*/React.createElement("div", {
+    className: "kb-lock"
+  }, "Renaming Kikibot and choosing its photo unlock with a full membership."), !loaded ? /*#__PURE__*/React.createElement("p", {
+    className: "empty"
+  }, "Loading your chat…") : null, /*#__PURE__*/React.createElement("div", {
+    className: "kb-msgs",
+    ref: listRef
+  }, messages.map(function (m) {
+    if (m.role === 'member') {
+      return /*#__PURE__*/React.createElement("div", {
+        key: m.id,
+        className: "kb-msg member"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "kb-bubble"
+      }, m.body));
+    }
+    return /*#__PURE__*/React.createElement("div", {
+      key: m.id,
+      className: "kb-msg kikibot"
+    }, kbAvatar(settings, true), /*#__PURE__*/React.createElement("div", {
+      className: "kb-bubble"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "kb-who"
+    }, name), m.body, m.action_tab ? /*#__PURE__*/React.createElement("div", {
+      className: "kb-action"
+    }, /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      onClick: function () {
+        onNavigate(m.action_tab);
+      }
+    }, m.action_label || 'Open')) : null));
+  })), /*#__PURE__*/React.createElement("form", {
+    className: "kb-inputrow",
+    onSubmit: send
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    value: input,
+    onChange: function (e) {
+      setInput(e.target.value);
+    },
+    placeholder: collectingSchedule ? 'What, and when? (or type cancel)' : 'Ask Kikibot…',
+    disabled: busy
+  }), /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    type: "submit",
+    disabled: busy || !input.trim()
+  }, busy ? '…' : 'Send')), collectingSchedule ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: '#d5dbe8',
+      marginTop: 8
+    }
+  }, "Scheduling — tell me what you would like to schedule, and the day and time that suit you.") : null);
+}
+
+/* Admin: Kikibot questions and scheduling requests awaiting Kiki. */
+function KikibotRequestsAdmin({
+  apps
+}) {
+  const [requests, setRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  function load() {
+    setLoading(true);
+    sb.from('kikibot_requests').select('*').order('created_at', {
+      ascending: false
+    }).then(function (res) {
+      setLoading(false);
+      if (res.error) {
+        setErr('Could not load Kikibot requests: ' + res.error.message);
+        return;
+      }
+      setRequests(res.data || []);
+    });
+  }
+  useEffect(function () {
+    load();
+  }, []);
+  async function updateRequest(id, status, label) {
+    setErr('');
+    setMsg('');
+    var res = await sb.from('kikibot_requests').update({
+      status: status,
+      updated_at: new Date().toISOString()
+    }).eq('id', id);
+    if (res.error) {
+      setErr('Could not update: ' + res.error.message);
+      return;
+    }
+    setMsg(label + ' saved.');
+    load();
+  }
+  function memberFor(r) {
+    for (var i = 0; i < apps.length; i++) {
+      if (apps[i].id === r.application_id) return apps[i];
+    }
+    return null;
+  }
+  var open = requests.filter(function (r) {
+    return r.status === 'open';
+  });
+  var rest = requests.filter(function (r) {
+    return r.status !== 'open';
+  });
+  var ordered = open.concat(rest);
+  return /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("h3", null, "Kikibot requests — questions and scheduling"), /*#__PURE__*/React.createElement("p", {
+    className: "muted",
+    style: {
+      fontSize: 14,
+      lineHeight: 1.6
+    }
+  }, "Questions Kikibot could not answer and scheduling requests from members. Answer them, then mark them answered or done."), err ? /*#__PURE__*/React.createElement("div", {
+    className: "error"
+  }, err) : null, msg ? /*#__PURE__*/React.createElement("div", {
+    className: "ok"
+  }, msg) : null, loading ? /*#__PURE__*/React.createElement("p", {
+    className: "empty"
+  }, "Loading requests…") : ordered.length === 0 ? /*#__PURE__*/React.createElement("p", {
+    className: "empty"
+  }, "No questions or scheduling requests yet.") : /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Member"), /*#__PURE__*/React.createElement("th", null, "Package"), /*#__PURE__*/React.createElement("th", null, "Kind"), /*#__PURE__*/React.createElement("th", null, "Request"), /*#__PURE__*/React.createElement("th", null, "Date"), /*#__PURE__*/React.createElement("th", null, "Status"), /*#__PURE__*/React.createElement("th", null, "Actions"))), /*#__PURE__*/React.createElement("tbody", null, ordered.map(function (r) {
+    var a = memberFor(r);
+    return /*#__PURE__*/React.createElement("tr", {
+      key: r.id
+    }, /*#__PURE__*/React.createElement("td", null, a ? a.full_name : '—', a ? /*#__PURE__*/React.createElement("div", {
+      className: "muted"
+    }, a.email) : null), /*#__PURE__*/React.createElement("td", null, a ? TIER_LABEL[a.tier] : '—'), /*#__PURE__*/React.createElement("td", null, r.kind === 'schedule' ? 'Scheduling' : r.kind === 'service' ? 'Service' : 'Question'), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("strong", null, r.title), r.details && r.details !== r.title ? /*#__PURE__*/React.createElement("div", {
+      className: "muted"
+    }, r.details) : null), /*#__PURE__*/React.createElement("td", null, fmtDate(r.created_at)), /*#__PURE__*/React.createElement("td", null, r.status), /*#__PURE__*/React.createElement("td", null, r.status === 'open' ? /*#__PURE__*/React.createElement("div", {
+      className: "actions"
+    }, /*#__PURE__*/React.createElement("button", {
+      className: "btn small secondary",
+      onClick: function () {
+        updateRequest(r.id, 'answered', 'Request marked answered');
+      }
+    }, "Mark answered"), /*#__PURE__*/React.createElement("button", {
+      className: "btn small",
+      onClick: function () {
+        updateRequest(r.id, 'done', 'Request marked done');
+      }
+    }, "Mark done")) : null));
+  }))));
+}
+
 /* ---------- Member dashboard (approved members) ---------- */
 function MemberArea({
   user,
@@ -925,9 +1507,11 @@ function MemberArea({
       className: "rowline",
       key: s.label
     }, /*#__PURE__*/React.createElement("span", null, s.label), statusPill(st));
-  })), tab === 'kikibot' && /*#__PURE__*/React.createElement("div", {
-    className: "kikibot"
-  }, /*#__PURE__*/React.createElement("h3", null, "Kikibot"), /*#__PURE__*/React.createElement("p", null, "Kikibot is coming next. When it arrives, it will help you with everything in your package — finding, searching, exploring, discovering, sending emails, and support."), /*#__PURE__*/React.createElement("p", null, "If Kikibot cannot do something, or does not understand, it will say “we will get back to you” and alert Kiki.")), tab === 'admin' && isAdmin && /*#__PURE__*/React.createElement(AdminPanel, null));
+  })), tab === 'kikibot' && /*#__PURE__*/React.createElement(KikibotTab, {
+    user: user,
+    application: application,
+    onNavigate: setTab
+  }), tab === 'admin' && isAdmin && /*#__PURE__*/React.createElement(AdminPanel, null));
 }
 
 /* ---------- Admin ---------- */
@@ -1117,7 +1701,9 @@ function AdminPanel() {
   })), /*#__PURE__*/React.createElement("button", {
     className: "btn",
     type: "submit"
-  }, "Record receipt"))));
+  }, "Record receipt"))), /*#__PURE__*/React.createElement(KikibotRequestsAdmin, {
+    apps: apps
+  }));
 }
 
 /* ---------- App ---------- */
