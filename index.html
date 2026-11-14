@@ -124,7 +124,7 @@
   .kb-msgs{ max-height:380px; overflow-y:auto; margin:18px 0 12px; padding-right:4px; display:flex; flex-direction:column; gap:10px; }
   .kb-msg{ display:flex; gap:8px; align-items:flex-start; }
   .kb-msg.member{ justify-content:flex-end; }
-  .kb-bubble{ max-width:78%; padding:10px 14px; border-radius:14px; font-size:14.5px; line-height:1.55; }
+  .kb-bubble{ max-width:78%; padding:10px 14px; border-radius:14px; font-size:14.5px; line-height:1.55; white-space:pre-wrap; }
   .kb-msg.member .kb-bubble{ background:var(--gold); color:var(--navy); border-bottom-right-radius:4px; }
   .kb-msg.kikibot .kb-bubble{ background:rgba(255,255,255,.1); color:#fff; border-bottom-left-radius:4px; }
   .kb-bubble .kb-who{ display:block; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--gold); margin-bottom:2px; }
@@ -171,7 +171,7 @@ const PACKAGES = {
     name: 'Full',
     price: 30000,
     tagline: 'Everything.',
-    points: ['Everything — all services', 'Access to the founder (Kiki)', 'Private counterclaims', 'Antique auctions', 'Flight', 'Accounting and the ledger', 'Kikibot assistance']
+    points: ['Everything — all services', 'Access to the founder (Kiki)', 'Private counterclaims', 'Antique auctions', 'Flight', 'Accounting and the ledger', 'Kikibot assistance', 'Chief-of-staff service — trust deadline tracker, document vault, morning briefing, household coordination, travel desk, property watch, delivery & escrow tracking, 24/7 private Q&A']
   },
   partial: {
     name: 'Partial',
@@ -279,6 +279,46 @@ const SERVICES = [{
   full: 'included',
   partial: 'included',
   sale: 'included'
+}, {
+  label: 'Trust deadline tracker',
+  full: 'included',
+  partial: 'excluded',
+  sale: 'excluded'
+}, {
+  label: 'Document vault reminders',
+  full: 'included',
+  partial: 'excluded',
+  sale: 'excluded'
+}, {
+  label: 'Morning briefing',
+  full: 'included',
+  partial: 'excluded',
+  sale: 'excluded'
+}, {
+  label: 'Private Q&A — your account & Full services',
+  full: 'included',
+  partial: 'excluded',
+  sale: 'excluded'
+}, {
+  label: 'Household coordination',
+  full: 'included',
+  partial: 'excluded',
+  sale: 'excluded'
+}, {
+  label: 'Travel desk',
+  full: 'included',
+  partial: 'excluded',
+  sale: 'excluded'
+}, {
+  label: 'Property watch',
+  full: 'included',
+  partial: 'excluded',
+  sale: 'excluded'
+}, {
+  label: 'Delivery & escrow tracking',
+  full: 'included',
+  partial: 'excluded',
+  sale: 'excluded'
 }];
 const TIER_LABEL = {
   full: 'Full',
@@ -865,6 +905,450 @@ function resizeAvatar(file) {
    tab/tabLabel open a dashboard tab from the reply. schedule means the
    member wants to schedule something (Full only). escalate means the
    question is saved for Kiki. */
+
+/* ---------- Kikibot tracked items (Full chief-of-staff service) ----------
+   Rule-based only. Items the member asks Kikibot to track are stored in
+   the Supabase table kikibot_items (see live/sql/kikibot-items-schema.sql).
+   If that table is not in the database yet, items are kept in this
+   browser's local storage instead, so the service still works.
+   Kikibot never invents a date, a price, a flight status or a property
+   value — it reports only what the member stored. */
+const KB_ITEM_KINDS = ['deadline', 'document', 'household', 'trip', 'property', 'delivery'];
+const KB_ITEM_LABELS = {
+  deadline: 'Deadline',
+  document: 'Document',
+  household: 'Household item',
+  trip: 'Trip',
+  property: 'Watched property',
+  delivery: 'Delivery'
+};
+const KB_ITEM_LABELS_PL = {
+  deadline: 'Deadlines',
+  document: 'Documents',
+  household: 'Household items',
+  trip: 'Trips',
+  property: 'Watched properties',
+  delivery: 'Deliveries'
+};
+
+/* Guided add flow: prompts per service, and which step (if any) is a date.
+   dateStep -1 means the service has no date step. */
+const KB_COLLECT = {
+  deadline: {
+    label: 'Trust deadline tracker',
+    kind: 'deadline',
+    prompts: ['What deadline should I track? (for example: Trust tax filing, Insurance renewal)', 'When is it due? Give a date like 2027-04-15 or April 15, 2027 — or type skip.', 'Anything else to note? Or type skip to finish.'],
+    dateStep: 1
+  },
+  document: {
+    label: 'Document vault reminders',
+    kind: 'document',
+    prompts: ['Which document should I watch? (for example: Passport, Trust deed, Will, Insurance policy)', 'When does it expire or need review? Give a date like 2027-06-01 or June 1, 2027 — or type skip.', 'Anything else to note — for example where it is kept? Or type skip to finish.'],
+    dateStep: 1
+  },
+  household: {
+    label: 'Household coordination',
+    kind: 'household',
+    prompts: ['What household item should I track? (for example: Pool service, Staff rota, School run, Family event)', 'When is it due? Give a date like 2027-03-10 or March 10, 2027 — or type skip.', 'Anything else to note? Or type skip to finish.'],
+    dateStep: 1
+  },
+  trip: {
+    label: 'Travel desk',
+    kind: 'trip',
+    prompts: ['Where are you going? (for example: London, June 12–15)', 'When do you travel? Give the departure date like 2027-06-12 or June 12, 2027 — or type skip.', 'Anything else — flight number, hotel, or who is travelling? Or type skip to finish.'],
+    dateStep: 1
+  },
+  property: {
+    label: 'Property watch',
+    kind: 'property',
+    prompts: ['Which property or piece of land should I watch? (for example: 40 acres, Duchesne County)', 'What should I watch for? (for example: price changes, new listings nearby) Or type skip to finish.'],
+    dateStep: -1
+  },
+  delivery: {
+    label: 'Delivery & escrow tracking',
+    kind: 'delivery',
+    prompts: ['What is being delivered? (for example: Antique cabinet)', 'Tracking code and carrier? (for example: TRK-12345) Or type skip.', 'Expected delivery date? Give a date like 2027-03-20 or March 20, 2027 — or type skip.'],
+    dateStep: 2
+  }
+};
+
+function kbFullOnlyMsg(serviceLabel, tier) {
+  return serviceLabel + ' is a Full membership benefit. Your ' + TIER_LABEL[tier] + ' package includes Kikibot assistance and questions here — and Kiki will get back to you in her own time. Upgrade to Full ($30,000 / month) to unlock it.';
+}
+
+function kbLocalKey(userId) {
+  return 'kikibot_items_' + userId;
+}
+function kbLoadLocalItems(userId) {
+  try {
+    var raw = window.localStorage.getItem(kbLocalKey(userId));
+    var arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+function kbSaveLocalItems(userId, items) {
+  try {
+    window.localStorage.setItem(kbLocalKey(userId), JSON.stringify(items));
+  } catch (e) {}
+}
+async function kbLoadItems(user) {
+  var items = [];
+  try {
+    var res = await sb.from('kikibot_items').select('*').eq('user_id', user.id).order('created_at', {
+      ascending: true
+    });
+    if (!res.error && res.data) {
+      items = res.data.map(function (r) {
+        return {
+          id: r.id,
+          kind: r.kind,
+          title: r.title,
+          details: r.details || '',
+          due_date: r.due_date || null,
+          status: r.status,
+          source: 'db'
+        };
+      });
+    }
+  } catch (e) {}
+  var local = kbLoadLocalItems(user.id);
+  var seen = {};
+  items.forEach(function (it) {
+    seen[it.id] = true;
+  });
+  local.forEach(function (it) {
+    if (!seen[it.id]) items.push(it);
+  });
+  return items;
+}
+async function kbAddItem(user, application, item) {
+  var row = {
+    user_id: user.id,
+    application_id: application.id,
+    kind: item.kind,
+    title: item.title,
+    details: item.details || '',
+    due_date: item.due_date || null,
+    status: 'open'
+  };
+  try {
+    var res = await sb.from('kikibot_items').insert(row).select().single();
+    if (!res.error && res.data) {
+      return {
+        id: res.data.id,
+        kind: res.data.kind,
+        title: res.data.title,
+        details: res.data.details || '',
+        due_date: res.data.due_date || null,
+        status: res.data.status,
+        source: 'db'
+      };
+    }
+  } catch (e) {}
+  var localItem = {
+    id: 'local-' + Date.now(),
+    kind: item.kind,
+    title: item.title,
+    details: item.details || '',
+    due_date: item.due_date || null,
+    status: 'open',
+    source: 'local'
+  };
+  var local = kbLoadLocalItems(user.id);
+  local.push(localItem);
+  kbSaveLocalItems(user.id, local);
+  return localItem;
+}
+async function kbUpdateItem(user, item, patch) {
+  if (item.source === 'db') {
+    try {
+      await sb.from('kikibot_items').update(patch).eq('id', item.id);
+    } catch (e) {}
+  } else {
+    var local = kbLoadLocalItems(user.id);
+    for (var i = 0; i < local.length; i++) {
+      if (local[i].id === item.id) {
+        for (var k in patch) local[i][k] = patch[k];
+      }
+    }
+    kbSaveLocalItems(user.id, local);
+  }
+}
+async function kbDeleteItem(user, item) {
+  if (item.source === 'db') {
+    try {
+      await sb.from('kikibot_items').delete().eq('id', item.id);
+    } catch (e) {}
+  } else {
+    var local = kbLoadLocalItems(user.id).filter(function (x) {
+      return x.id !== item.id;
+    });
+    kbSaveLocalItems(user.id, local);
+  }
+}
+
+/* Dates: accept YYYY-MM-DD, MM/DD/YYYY, or a month-name date. Returns an
+   ISO date (YYYY-MM-DD) or null. */
+function kbParseDate(str) {
+  if (!str) return null;
+  var s = String(str).trim();
+  if (!s) return null;
+  var m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  var d = null;
+  if (m) {
+    d = new Date(+m[1], +m[2] - 1, +m[3]);
+  } else {
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) {
+      d = new Date(+m[3], +m[1] - 1, +m[2]);
+    } else {
+      var parsed = Date.parse(s);
+      if (!isNaN(parsed)) d = new Date(parsed);
+    }
+  }
+  if (!d || isNaN(d.getTime())) return null;
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function kbDaysUntil(iso) {
+  if (!iso) return null;
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  var d = new Date(iso + 'T00:00:00');
+  if (isNaN(d.getTime())) return null;
+  return Math.round((d.getTime() - today.getTime()) / 86400000);
+}
+function kbDueText(iso) {
+  if (!iso) return 'no date set';
+  var n = kbDaysUntil(iso);
+  var f = fmtDate(iso);
+  if (n === null) return f;
+  if (n === 0) return f + ' (today)';
+  if (n === 1) return f + ' (tomorrow)';
+  if (n > 1) return f + ' (in ' + n + ' days)';
+  if (n === -1) return f + ' (yesterday — overdue)';
+  return f + ' (' + Math.abs(n) + ' days overdue)';
+}
+function kbIsSkip(str) {
+  var s = (str || '').trim().toLowerCase();
+  return s === 'skip' || s === 'none' || s === 'no' || s === 'n/a' || s === 'no date';
+}
+
+/* Detect a Full-service intent that needs stored items (briefing, list,
+   mark done, remove). Returns null when the text is not one. Checked
+   before the general reply handler, so these take priority. */
+function kbServiceIntent(text) {
+  var t = (text || '').toLowerCase();
+  function has() {
+    for (var i = 0; i < arguments.length; i++) {
+      if (t.indexOf(arguments[i]) !== -1) return true;
+    }
+    return false;
+  }
+  if (has('briefing', 'my day', 'what is due', "what's due", 'whats due', 'due today', 'daily briefing', 'what is coming up', 'whats coming up')) return {
+    kind: 'briefing'
+  };
+  if (has('my deadlines', 'list deadlines', 'show deadlines', 'upcoming deadlines', 'deadlines due', 'my deadline')) return {
+    kind: 'list',
+    service: 'deadline'
+  };
+  if (has('my documents', 'list documents', 'show documents', 'my document', 'my passport', 'my will', 'my trust deed', 'expiring documents', 'documents expiring')) return {
+    kind: 'list',
+    service: 'document'
+  };
+  if (has('my household', 'household list', 'show household', 'household items')) return {
+    kind: 'list',
+    service: 'household'
+  };
+  if (has('my trips', 'list trips', 'show trips', 'my trip', 'upcoming trips', 'my travel')) return {
+    kind: 'list',
+    service: 'trip'
+  };
+  if (has('my properties', 'list properties', 'show properties', 'watched propert', 'my property', 'property watch')) return {
+    kind: 'list',
+    service: 'property'
+  };
+  if (has('my deliveries', 'list deliveries', 'show deliveries', 'delivery status', 'where is my delivery', 'track my delivery', 'track delivery', 'track a delivery', 'my delivery', 'escrow status', 'my escrow')) return {
+    kind: 'list',
+    service: 'delivery'
+  };
+  if (has('show everything', 'list everything', 'all my items', 'my items', 'everything tracked', 'everything i am tracking')) return {
+    kind: 'list',
+    service: 'all'
+  };
+  if (has('mark ') && has('done', 'complete')) return {
+    kind: 'done',
+    query: text
+  };
+  if (has('remove ', 'delete ')) return {
+    kind: 'remove',
+    query: text
+  };
+  return null;
+}
+
+/* Detect an "add a tracked item" request. Returns the service key or null. */
+function kbAddIntent(t) {
+  function has() {
+    for (var i = 0; i < arguments.length; i++) {
+      if (t.indexOf(arguments[i]) !== -1) return true;
+    }
+    return false;
+  }
+  var verb = has('add', 'track', 'new', 'remind', 'watch');
+  if (!verb) return null;
+  if (has('deadline')) return 'deadline';
+  if (has('document', 'passport', 'will', 'trust deed', 'insurance polic')) return 'document';
+  if (has('household')) return 'household';
+  if (has('trip', 'travel', 'flight to', 'holiday', 'vacation')) return 'trip';
+  if (has('propert', 'land', 'acre')) return 'property';
+  if (has('deliver', 'package', 'parcel', 'escrow')) return 'delivery';
+  return null;
+}
+
+/* Match stored items by the words in a "mark done" / "remove" request. */
+function kbFindItems(items, query) {
+  var stop = ['mark', 'set', 'done', 'complete', 'completed', 'remove', 'delete', 'the', 'a', 'an', 'my', 'please', 'as', 'it', 'this', 'that'];
+  var words = (query || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(function (w) {
+    return w && stop.indexOf(w) === -1;
+  });
+  if (words.length === 0) return [];
+  return items.filter(function (it) {
+    var hay = (it.title + ' ' + it.details + ' ' + it.kind).toLowerCase();
+    return words.every(function (w) {
+      return hay.indexOf(w) !== -1;
+    });
+  });
+}
+
+function kbListText(service, items) {
+  var list = items.filter(function (it) {
+    return it.status === 'open' && (service === 'all' || it.kind === service);
+  });
+  list.sort(function (a, b) {
+    if (!a.due_date && !b.due_date) return 0;
+    if (!a.due_date) return 1;
+    if (!b.due_date) return -1;
+    return a.due_date < b.due_date ? -1 : 1;
+  });
+  if (list.length === 0) {
+    if (service === 'all') return 'You have nothing tracked yet. Ask me to add a deadline, a document, a household item, a trip, a property, or a delivery.';
+    return 'You have no ' + KB_ITEM_LABELS_PL[service].toLowerCase() + ' tracked yet. Ask me to add one — for example: “add a ' + service + '”.';
+  }
+  var head = service === 'all' ? 'Here is everything I am tracking for you:' : 'Your ' + KB_ITEM_LABELS_PL[service].toLowerCase() + ':';
+  var lines = list.map(function (it) {
+    var line = '• ' + it.title + ' — ' + kbDueText(it.due_date);
+    if (it.details) line += ' (' + it.details + ')';
+    return line;
+  });
+  return head + '\n' + lines.join('\n');
+}
+
+/* Morning briefing, built only from what the member stored, their
+   receipts and their ledger balance. No live data is invented. */
+async function kbBriefingText(user, application, receipts, ledger) {
+  var items = await kbLoadItems(user);
+  var open = items.filter(function (it) {
+    return it.status === 'open';
+  });
+  var lines = [];
+  lines.push('Good morning — here is your briefing.');
+  var dl = open.filter(function (it) {
+    return it.kind === 'deadline';
+  });
+  var dueSoon = dl.filter(function (it) {
+    var n = kbDaysUntil(it.due_date);
+    return n !== null && n <= 7;
+  });
+  if (dueSoon.length) {
+    lines.push('Deadlines due soon:');
+    dueSoon.forEach(function (it) {
+      lines.push('• ' + it.title + ' — ' + kbDueText(it.due_date));
+    });
+  } else {
+    lines.push('No deadlines due in the next 7 days.');
+  }
+  var docs = open.filter(function (it) {
+    return it.kind === 'document';
+  });
+  var expSoon = docs.filter(function (it) {
+    var n = kbDaysUntil(it.due_date);
+    return n !== null && n <= 30;
+  });
+  if (expSoon.length) {
+    lines.push('Documents expiring soon:');
+    expSoon.forEach(function (it) {
+      lines.push('• ' + it.title + ' — ' + kbDueText(it.due_date));
+    });
+  } else {
+    lines.push('No documents expiring in the next 30 days.');
+  }
+  var hh = open.filter(function (it) {
+    return it.kind === 'household';
+  });
+  var hhDue = hh.filter(function (it) {
+    var n = kbDaysUntil(it.due_date);
+    return n !== null && n <= 1;
+  });
+  if (hhDue.length) {
+    lines.push('Household due:');
+    hhDue.forEach(function (it) {
+      lines.push('• ' + it.title + ' — ' + kbDueText(it.due_date));
+    });
+  } else if (hh.length) {
+    lines.push('Household: ' + hh.length + ' item(s) tracked, none due today.');
+  } else {
+    lines.push('No household items tracked yet.');
+  }
+  var trips = open.filter(function (it) {
+    return it.kind === 'trip';
+  });
+  var tripSoon = trips.filter(function (it) {
+    var n = kbDaysUntil(it.due_date);
+    return n !== null && n <= 14;
+  });
+  if (tripSoon.length) {
+    lines.push('Trips coming up:');
+    tripSoon.forEach(function (it) {
+      lines.push('• ' + it.title + ' — ' + kbDueText(it.due_date));
+    });
+    lines.push('Travel check: make sure your passport and travel documents are in date before you go.');
+  } else if (trips.length) {
+    lines.push('Trips tracked: ' + trips.length + ', none in the next 14 days.');
+  }
+  var props = open.filter(function (it) {
+    return it.kind === 'property';
+  });
+  if (props.length) {
+    lines.push('Properties watched: ' + props.map(function (it) {
+      return it.title;
+    }).join(', ') + '. I keep the record you give me — I do not have live prices, so tell me what changes and I will keep it.');
+  }
+  var del = open.filter(function (it) {
+    return it.kind === 'delivery';
+  });
+  if (del.length) {
+    lines.push('Deliveries:');
+    del.forEach(function (it) {
+      var line = '• ' + it.title + ' — ' + kbDueText(it.due_date);
+      if (it.details) line += ' (' + it.details + ')';
+      lines.push(line);
+    });
+    lines.push('Tell me when a delivery arrives and I will mark it done.');
+  } else {
+    lines.push('No deliveries tracked here yet — give me a tracking code and I will keep its record.');
+  }
+  if (ledger && ledger.length > 0) {
+    lines.push('Ledger balance: ' + fmtMoney(ledger[0].balance_cents) + '.');
+  }
+  if (receipts && receipts.length > 0) {
+    lines.push('Latest receipt: ' + fmtMoney(receipts[0].amount_cents) + ' — ' + receipts[0].description + ' (' + fmtDate(receipts[0].created_at) + ').');
+  }
+  lines.push('Ask me for your full lists any time — deadlines, documents, household, trips, properties, or deliveries.');
+  return lines.join('\n');
+}
+
 function kbReply(text, tier, name) {
   var t = (text || '').toLowerCase();
   function has() {
@@ -874,7 +1358,7 @@ function kbReply(text, tier, name) {
     return false;
   }
   function ans(txt, tab, tabLabel) {
-    return { text: txt, tab: tab || null, tabLabel: tabLabel || null, schedule: false, escalate: false };
+    return { text: txt, tab: tab || null, tabLabel: tabLabel || null, schedule: false, escalate: false, collect: null };
   }
   // Scheduling — Full members only.
   if (has('schedul', 'appointment', 'meeting', 'book a call', 'arrange a time', 'set a time')) {
@@ -882,6 +1366,12 @@ function kbReply(text, tier, name) {
       return ans('Scheduling requests unlock with a full membership. Your ' + TIER_LABEL[tier] + ' package includes Kikibot assistance and questions here — and Kiki will get back to you in her own time.');
     }
     return { text: '', tab: null, tabLabel: null, schedule: true, escalate: false };
+  }
+  // Full-only tracked services — add (guided, step by step).
+  var addSvc = kbAddIntent(t);
+  if (addSvc) {
+    if (tier !== 'full') return ans(kbFullOnlyMsg(KB_COLLECT[addSvc].label, tier));
+    return { text: '', tab: null, tabLabel: null, schedule: false, escalate: false, collect: addSvc };
   }
   // Receipts.
   if (has('receipt')) {
@@ -930,12 +1420,19 @@ function kbReply(text, tier, name) {
   // Services / package contents.
   if (has('service', 'package', 'includ', 'wardrobe', 'chef', 'butler', 'grocery', 'driver', 'benefit', 'group')) {
     if (tier === 'full') {
-      return ans('Your Full package includes everything — all services, access to the founder (Kiki), private counterclaims, antique auctions, and Flight.', 'services', 'See your services');
+      return ans('Your Full package includes everything — all services, access to the founder (Kiki), private counterclaims, antique auctions, and Flight. It also includes your chief-of-staff service: trust deadline tracker, document vault reminders, morning briefing, household coordination, travel desk, property watch, delivery & escrow tracking, and 24/7 private Q&A.', 'services', 'See your services');
     }
     if (tier === 'partial') {
-      return ans('Your Partial package includes everything except antique auctions and Flight — including accounting, the ledger, affidavit submissions, and 15 hours of counterclaims. Kikibot assists you; access to the founder (Kiki) is not included.', 'services', 'See your services');
+      return ans('Your Partial package includes everything except antique auctions and Flight — including accounting, the ledger, affidavit submissions, and 15 hours of counterclaims. Kikibot assists you; access to the founder (Kiki) is not included. The chief-of-staff services (trust deadline tracker, document vault, morning briefing, household coordination, travel desk, property watch, delivery & escrow tracking) are Full membership benefits.', 'services', 'See your services');
     }
-    return ans('Your Sale package starts with a 3-day trial of everything, then continues with designer access, drivers, and Kikibot assistance. It also includes free affidavit submissions and your ledger.', 'services', 'See your services');
+    return ans('Your Sale package starts with a 3-day trial of everything, then continues with designer access, drivers, and Kikibot assistance. It also includes free affidavit submissions and your ledger. The chief-of-staff services (trust deadline tracker, document vault, morning briefing, household coordination, travel desk, property watch, delivery & escrow tracking) are Full membership benefits.', 'services', 'See your services');
+  }
+  // The new Full chief-of-staff services — what they are.
+  if (has('what is', 'tell me about', 'how does', 'explain') && has('deadline tracker', 'document vault', 'morning briefing', 'household coordination', 'travel desk', 'property watch', 'delivery tracking', 'escrow tracking', 'private q&a', 'chief-of-staff', 'chief of staff')) {
+    if (tier === 'full') {
+      return ans('Your Full chief-of-staff service runs on what you ask me to track: a trust deadline tracker, document vault reminders, a morning briefing, household coordination, a travel desk, property watch, and delivery & escrow tracking — plus 24/7 private Q&A about your account and benefits. Ask me to add a deadline, a document, a trip, a property, or a delivery, or ask for your morning briefing.');
+    }
+    return ans(kbFullOnlyMsg('The chief-of-staff service', tier));
   }
   // Greeting.
   if (has('hello', 'good morning', 'good afternoon') || t === 'hi' || t.indexOf('hi ') === 0 || t.indexOf(' hi ') !== -1 || t === 'hey' || t.indexOf('hey ') === 0 || t.indexOf(' hey ') !== -1) {
@@ -951,10 +1448,13 @@ function kbReply(text, tier, name) {
   }
   // What can Kikibot do.
   if (has('what can you', 'help me', 'help')) {
-    return ans('I can answer questions about your package, show you your receipts, ledger and services, take scheduling requests (Full members), and save questions for Kiki when I cannot answer them.');
+    if (tier === 'full') {
+      return ans('I can answer questions about your package, show you your receipts, ledger and services, take scheduling requests, and run your Full chief-of-staff service: trust deadline tracker, document vault reminders, a morning briefing, household coordination, a travel desk, property watch, and delivery & escrow tracking. Ask me to add a deadline, a document, a trip, a property, or a delivery — or ask for your morning briefing.');
+    }
+    return ans('I can answer questions about your package, show you your receipts, ledger and services, take scheduling requests (Full members), and save questions for Kiki when I cannot answer them. The trust deadline tracker, document vault, morning briefing, household coordination, travel desk, property watch, and delivery & escrow tracking are Full membership benefits.');
   }
   // Nothing matched — save the question for Kiki.
-  return { text: '', tab: null, tabLabel: null, schedule: false, escalate: true };
+  return { text: '', tab: null, tabLabel: null, schedule: false, escalate: true, collect: null };
 }
 
 function kbAvatar(settings, small) {
@@ -975,6 +1475,8 @@ function kbAvatar(settings, small) {
 function KikibotTab({
   user,
   application,
+  receipts,
+  ledger,
   onNavigate
 }) {
   const [messages, setMessages] = useState([]);
@@ -986,6 +1488,7 @@ function KikibotTab({
   const [photoBusy, setPhotoBusy] = useState(false);
   const [settingsErr, setSettingsErr] = useState('');
   const [collectingSchedule, setCollectingSchedule] = useState(false);
+  const [collecting, setCollecting] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const listRef = useRef(null);
   const seededRef = useRef(false);
@@ -1010,6 +1513,7 @@ function KikibotTab({
         if (rows.length === 0 && !seededRef.current) {
           seededRef.current = true;
           var greet = 'Hello — I am ' + kikibotName(st) + ', your butler and assistant. Ask me about your package, your receipts or ledger, or what I can do for you.';
+          if (application.tier === 'full') greet += ' As a Full member you can also ask for your morning briefing, or ask me to track a deadline, a document, a trip, a property, or a delivery.';
           sb.from('kikibot_messages').insert({
             user_id: user.id,
             application_id: application.id,
@@ -1061,7 +1565,71 @@ function KikibotTab({
       shown = shown.concat([ins.data]);
       setMessages(shown);
       var reply;
-      if (collectingSchedule) {
+      if (collecting) {
+        if (text.toLowerCase() === 'cancel') {
+          setCollecting(null);
+          reply = {
+            text: 'No problem — nothing was saved. How else can I help?',
+            tab: null,
+            tabLabel: null
+          };
+        } else {
+          var cfg = KB_COLLECT[collecting.service];
+          var draft = collecting.draft;
+          var step = collecting.step;
+          if (step === cfg.dateStep) {
+            if (kbIsSkip(text)) {
+              draft.dueDate = null;
+            } else {
+              var parsed = kbParseDate(text);
+              if (!parsed) {
+                reply = {
+                  text: 'I could not read that date. Please give it like 2027-04-15 or April 15, 2027 — or type skip.',
+                  tab: null,
+                  tabLabel: null
+                };
+                var savedBad = await saveReply(reply.text, reply.tab, reply.tabLabel);
+                setMessages(shown.concat([savedBad]));
+                return;
+              }
+              draft.dueDate = parsed;
+            }
+          } else if (step === 0) {
+            draft.title = text;
+          } else if (!kbIsSkip(text)) {
+            draft.details = text;
+          }
+          var nextStep = step + 1;
+          if (nextStep >= cfg.prompts.length) {
+            var savedItem = await kbAddItem(user, application, {
+              kind: cfg.kind,
+              title: draft.title,
+              details: draft.details || '',
+              due_date: draft.dueDate || null
+            });
+            setCollecting(null);
+            var confirm = 'Saved — ' + KB_ITEM_LABELS[cfg.kind] + ': ' + savedItem.title + ' — ' + kbDueText(savedItem.due_date) + '.';
+            if (cfg.kind === 'property') confirm += ' I will keep it on your watch list; ask me for your properties any time.';
+            if (cfg.kind === 'delivery') confirm += ' I keep the record you give me — tell me when it arrives and I will mark it done.';
+            reply = {
+              text: confirm,
+              tab: null,
+              tabLabel: null
+            };
+          } else {
+            setCollecting({
+              service: collecting.service,
+              step: nextStep,
+              draft: draft
+            });
+            reply = {
+              text: cfg.prompts[nextStep],
+              tab: null,
+              tabLabel: null
+            };
+          }
+        }
+      } else if (collectingSchedule) {
         if (text.toLowerCase() === 'cancel') {
           setCollectingSchedule(false);
           reply = {
@@ -1086,30 +1654,128 @@ function KikibotTab({
           };
         }
       } else {
-        var r = kbReply(text, tier, name);
-        if (r.schedule) {
-          setCollectingSchedule(true);
-          reply = {
-            text: 'Of course. What would you like to schedule, and what day and time suit you? Reply “cancel” if you change your mind.',
-            tab: null,
-            tabLabel: null
-          };
-        } else if (r.escalate) {
-          var q = await sb.from('kikibot_requests').insert({
-            user_id: user.id,
-            application_id: application.id,
-            kind: 'question',
-            title: text.slice(0, 80),
-            details: text
-          }).select().single();
-          if (q.error) throw q.error;
-          reply = {
-            text: 'We will get back to you. Your question has been saved for Kiki.',
-            tab: null,
-            tabLabel: null
-          };
+        var svc = kbServiceIntent(text);
+        if (svc && svc.kind === 'briefing') {
+          if (!isFull) {
+            reply = {
+              text: kbFullOnlyMsg('The morning briefing', tier),
+              tab: null,
+              tabLabel: null
+            };
+          } else {
+            reply = {
+              text: await kbBriefingText(user, application, receipts, ledger),
+              tab: null,
+              tabLabel: null
+            };
+          }
+        } else if (svc && svc.kind === 'list') {
+          if (!isFull) {
+            reply = {
+              text: kbFullOnlyMsg(svc.service === 'all' ? 'Tracked items' : KB_ITEM_LABELS_PL[svc.service], tier),
+              tab: null,
+              tabLabel: null
+            };
+          } else {
+            var allItems = await kbLoadItems(user);
+            reply = {
+              text: kbListText(svc.service, allItems),
+              tab: null,
+              tabLabel: null
+            };
+          }
+        } else if (svc && (svc.kind === 'done' || svc.kind === 'remove')) {
+          if (!isFull) {
+            reply = {
+              text: kbFullOnlyMsg('Tracked items', tier),
+              tab: null,
+              tabLabel: null
+            };
+          } else {
+            var openItems = (await kbLoadItems(user)).filter(function (it) {
+              return it.status === 'open';
+            });
+            var matches = kbFindItems(openItems, svc.query);
+            if (matches.length === 0) {
+              reply = {
+                text: 'I could not find an item matching that. Ask me to list your items to see what I am tracking.',
+                tab: null,
+                tabLabel: null
+              };
+            } else if (matches.length > 1) {
+              reply = {
+                text: 'More than one item matches that: ' + matches.map(function (m) {
+                  return m.title;
+                }).join(', ') + '. Please be more specific.',
+                tab: null,
+                tabLabel: null
+              };
+            } else {
+              var match = matches[0];
+              if (svc.kind === 'done') {
+                await kbUpdateItem(user, match, {
+                  status: 'done'
+                });
+                reply = {
+                  text: 'Done — ' + match.title + ' is marked complete.',
+                  tab: null,
+                  tabLabel: null
+                };
+              } else {
+                await kbDeleteItem(user, match);
+                reply = {
+                  text: 'Removed — ' + match.title + ' is no longer tracked.',
+                  tab: null,
+                  tabLabel: null
+                };
+              }
+            }
+          }
         } else {
-          reply = r;
+          var r = kbReply(text, tier, name);
+          if (r.collect) {
+            if (tier !== 'full') {
+              reply = {
+                text: kbFullOnlyMsg(KB_COLLECT[r.collect].label, tier),
+                tab: null,
+                tabLabel: null
+              };
+            } else {
+              setCollecting({
+                service: r.collect,
+                step: 0,
+                draft: {}
+              });
+              reply = {
+                text: KB_COLLECT[r.collect].prompts[0],
+                tab: null,
+                tabLabel: null
+              };
+            }
+          } else if (r.schedule) {
+            setCollectingSchedule(true);
+            reply = {
+              text: 'Of course. What would you like to schedule, and what day and time suit you? Reply “cancel” if you change your mind.',
+              tab: null,
+              tabLabel: null
+            };
+          } else if (r.escalate) {
+            var q = await sb.from('kikibot_requests').insert({
+              user_id: user.id,
+              application_id: application.id,
+              kind: 'question',
+              title: text.slice(0, 80),
+              details: text
+            }).select().single();
+            if (q.error) throw q.error;
+            reply = {
+              text: 'We will get back to you. Your question has been saved for Kiki.',
+              tab: null,
+              tabLabel: null
+            };
+          } else {
+            reply = r;
+          }
         }
       }
       var saved = await saveReply(reply.text, reply.tab, reply.tabLabel);
@@ -1269,7 +1935,7 @@ function KikibotTab({
     onChange: function (e) {
       setInput(e.target.value);
     },
-    placeholder: collectingSchedule ? 'What, and when? (or type cancel)' : 'Ask Kikibot…',
+    placeholder: collecting ? 'Your answer (or type cancel)' : collectingSchedule ? 'What, and when? (or type cancel)' : 'Ask Kikibot…',
     disabled: busy
   }), /*#__PURE__*/React.createElement("button", {
     className: "btn",
@@ -1281,7 +1947,13 @@ function KikibotTab({
       color: '#d5dbe8',
       marginTop: 8
     }
-  }, "Scheduling — tell me what you would like to schedule, and the day and time that suit you.") : null);
+  }, "Scheduling — tell me what you would like to schedule, and the day and time that suit you.") : null, collecting ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: '#d5dbe8',
+      marginTop: 8
+    }
+  }, "Adding " + KB_COLLECT[collecting.service].label + " — answer the question, or type cancel.") : null);
 }
 
 /* Admin: Kikibot questions and scheduling requests awaiting Kiki. */
@@ -1510,6 +2182,8 @@ function MemberArea({
   })), tab === 'kikibot' && /*#__PURE__*/React.createElement(KikibotTab, {
     user: user,
     application: application,
+    receipts: receipts,
+    ledger: ledger,
     onNavigate: setTab
   }), tab === 'admin' && isAdmin && /*#__PURE__*/React.createElement(AdminPanel, null));
 }
