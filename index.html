@@ -535,7 +535,14 @@ function PackageCard({
     onClick: function () {
       onApply(tier);
     }
-  }, "Apply for ", p.name, " — ", fmtDollars(p.price), " / month"));
+  }, "Apply for ", p.name, " — ", fmtDollars(p.price), " / month"), /*#__PURE__*/React.createElement("p", {
+    className: "muted",
+    style: {
+      marginTop: 10,
+      fontSize: 13,
+      lineHeight: 1.5
+    }
+  }, "Pay by card (secure checkout) or bank wire / ACH — wire instructions are sent privately after approval."));
 }
 function Landing({
   onApply,
@@ -775,23 +782,107 @@ function ApplyForm({
 }
 
 /* ---------- Checkout button ---------- */
+/* Bank wire / ACH is offered alongside card checkout. No bank account
+   details are ever shown on this page: the member requests the wire
+   instructions and they are sent privately by email. The request is
+   also recorded as a kikibot_requests row (kind 'wire_payment') so
+   Kiki sees it. Membership is reserved pending receipt of the wire. */
 function CheckoutButton({
-  tier
+  tier,
+  application
 }) {
   const link = PAYMENT_LINKS[tier];
   const p = PACKAGES[tier];
-  if (isPlaceholder(link)) {
-    return /*#__PURE__*/React.createElement("button", {
-      className: "btn",
-      disabled: true
-    }, "Payment link coming soon");
+  const [wireOpen, setWireOpen] = useState(false);
+  const [wireSaved, setWireSaved] = useState(false);
+  const [wireBusy, setWireBusy] = useState(false);
+  const [wireErr, setWireErr] = useState('');
+  const wireSubject = 'Wire / ACH payment request \u2014 ' + p.name + ' ' + fmtDollars(p.price) + ' / month';
+  const wireBody = 'Hello,\n\nI would like to pay by bank wire / ACH for the Kikibots Private ' + p.name + ' package (' + fmtDollars(p.price) + ' / month).\n\nPlease send the wire instructions to my email on file.\n\nThank you.';
+  const wireMailto = 'mailto:support@executives.org.uk?subject=' + encodeURIComponent(wireSubject) + '&body=' + encodeURIComponent(wireBody);
+  async function recordWireRequest() {
+    if (!application) return;
+    setWireErr('');
+    setWireBusy(true);
+    try {
+      const res = await sb.from('kikibot_requests').insert({
+        user_id: application.user_id,
+        application_id: application.id,
+        kind: 'wire_payment',
+        title: 'Wire / ACH payment request \u2014 ' + p.name + ' ' + fmtDollars(p.price) + ' / month',
+        details: 'Member requested bank wire / ACH instructions for the ' + p.name + ' package (' + fmtDollars(p.price) + ' / month). Send wire instructions privately to the email on file. Membership is reserved pending receipt and confirmation of the wire.'
+      }).select().single();
+      if (res.error) throw res.error;
+      setWireSaved(true);
+    } catch (e) {
+      setWireErr('Could not record the request: ' + (e && e.message ? e.message : 'unknown error'));
+    }
+    setWireBusy(false);
   }
-  return /*#__PURE__*/React.createElement("a", {
+  const stripeBtn = isPlaceholder(link) ? /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    disabled: true
+  }, "Payment link coming soon") : /*#__PURE__*/React.createElement("a", {
     className: "btn",
     href: link,
     target: "_blank",
     rel: "noreferrer"
   }, "Pay ", fmtDollars(p.price), " / month — secure checkout");
+  return /*#__PURE__*/React.createElement("div", null, stripeBtn, /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    type: "button",
+    onClick: function () {
+      setWireOpen(!wireOpen);
+    },
+    style: {
+      marginTop: 10,
+      background: 'transparent',
+      color: 'var(--navy)',
+      border: '1px solid var(--navy)'
+    }
+  }, "Pay by bank wire / ACH"), wireOpen && /*#__PURE__*/React.createElement("div", {
+    className: "notice",
+    style: {
+      marginTop: 10,
+      textAlign: 'left'
+    }
+  }, /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: '0 0 8px',
+      fontSize: 14,
+      lineHeight: 1.6
+    }
+  }, "Bank details are never shown on this page. Request the wire instructions and we will email them to you privately. Your membership is reserved while your wire is on its way \u2014 it activates once the wire is received and confirmed."), /*#__PURE__*/React.createElement("a", {
+    className: "btn",
+    href: wireMailto,
+    style: {
+      display: 'inline-block',
+      marginTop: 4
+    }
+  }, "Request wire instructions by email"), application && /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    type: "button",
+    onClick: recordWireRequest,
+    disabled: wireBusy || wireSaved,
+    style: {
+      marginTop: 8,
+      marginLeft: 8,
+      background: 'transparent',
+      color: 'var(--navy)',
+      border: '1px solid var(--navy)'
+    }
+  }, wireSaved ? 'Request recorded \u2713' : (wireBusy ? 'Recording\u2026' : 'Record my wire request')), wireSaved && /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: '8px 0 0',
+      fontSize: 14
+    }
+  }, "Request recorded \u2014 Kiki will send the wire instructions to the email on file."), wireErr && /*#__PURE__*/React.createElement("p", {
+    style: {
+      margin: '8px 0 0',
+      fontSize: 14,
+      color: '#b42318'
+    }
+  }, wireErr)));
 }
 
 /* ---------- Member status (before approval) ---------- */
@@ -855,7 +946,8 @@ function StatusView({
       marginTop: 12
     }
   }, /*#__PURE__*/React.createElement(CheckoutButton, {
-    tier: a.tier
+    tier: a.tier,
+    application: a
   }))));
 }
 
@@ -2134,14 +2226,15 @@ function MemberArea({
       marginTop: 18
     }
   }, /*#__PURE__*/React.createElement(CheckoutButton, {
-    tier: tier
+    tier: tier,
+    application: a
   })), /*#__PURE__*/React.createElement("p", {
     className: "muted",
     style: {
       fontSize: 14,
       lineHeight: 1.6
     }
-  }, "Your receipt will appear under Receipts after your first confirmed payment.")), tab === 'receipts' && /*#__PURE__*/React.createElement("div", {
+  }, "Your receipt will appear under Receipts after your first confirmed payment. You can also pay by bank wire / ACH \u2014 choose that option above and request the instructions.")), tab === 'receipts' && /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("h3", null, "Receipts"), receipts.length === 0 ? /*#__PURE__*/React.createElement("p", {
     className: "empty"
